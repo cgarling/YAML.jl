@@ -511,6 +511,19 @@ end
     @test YAML.load("0") == 0
     @test YAML.load("10") == 10
     @test YAML.load("089") == "089"       # leading zero, non-octal digit
+    # signed scalars are parsed as base 10, so leading zeros are fine there
+    @test YAML.load("-014") === -14
+    @test YAML.load("+014") === 14
+    @test YAML.load("-089") === -89
+    # a dot or exponent marks a float even with leading zeros
+    @test YAML.load("01.5") === 1.5
+    @test YAML.load("001.5") === 1.5
+    @test YAML.load("+01.5") === 1.5
+    @test YAML.load("-01.5") === -1.5
+    @test YAML.load("00.5") === 0.5
+    @test YAML.load("01e2") === 100.0
+    @test YAML.load("-01e2") === -100.0
+    @test YAML.load("1e5") === 100000.0
 end
 
 end  # module
