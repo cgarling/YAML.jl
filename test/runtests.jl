@@ -242,8 +242,7 @@ const encodings = [
     @test YAML.load(IOBuffer(data)) == "test"
 end
 
-@testset "multi_doc_bom" begin
-    iterable = YAML.load_all("""
+const multidoc_contents = """
 \ufeff---\r
 test: 1
 \ufeff---
@@ -251,14 +250,51 @@ test: 2
 
 \ufeff---
 test: 3
-""")
+\ufeff---
+42
+"""
+
+@testset "multi_doc_bom" begin
+    iterable = YAML.load_all(multidoc_contents)
     (val, state) = iterate(iterable)
     @test isequal(val, Dict("test" => 1))
     (val, state) = iterate(iterable, state)
     @test isequal(val, Dict("test" => 2))
     (val, state) = iterate(iterable, state)
     @test isequal(val, Dict("test" => 3))
+    (val, state) = iterate(iterable, state)
+    @test isequal(val, 42)
     @test iterate(iterable, state) === nothing
+end
+
+@testset "multi_doc_file" begin
+    fname = tempname()
+    open(fname, "w") do f
+        write(f, multidoc_contents)
+    end
+    iterable = YAML.load_all_file(fname)
+    (val, state) = iterate(iterable)
+    @test isequal(val, Dict("test" => 1))
+    (val, state) = iterate(iterable, state)
+    @test isequal(val, Dict("test" => 2))
+    (val, state) = iterate(iterable, state)
+    @test isequal(val, Dict("test" => 3))
+    (val, state) = iterate(iterable, state)
+    @test isequal(val, 42)
+    @test iterate(iterable, state) === nothing
+    rm(fname)
+end
+
+@testset "multi_doc_iteration_protocol" begin
+    fname = tempname()
+    open(fname, "w") do f
+        write(f, multidoc_contents)
+    end
+    iterable = YAML.load_all_file(fname)
+    @test Base.IteratorSize(YAML.YAMLDocIterator) == Base.SizeUnknown()
+    @test Base.IteratorEltype(YAML.YAMLDocIterator) == Base.EltypeUnknown()
+    @test length(collect(iterable)) == 4
+    rm(fname)
 end
 
 # test that an OrderedDict is written in the correct order
@@ -524,6 +560,133 @@ end
     @test YAML.load("01e2") === 100.0
     @test YAML.load("-01e2") === -100.0
     @test YAML.load("1e5") === 100000.0
+end
+
+@testset "empty input and null documents" begin
+    @test YAML.missing_to_nothing(YAML.MissingDocument()) === nothing
+    @test YAML.missing_to_nothing("present") === "present"
+    @test YAML.load("") === nothing
+    @test isempty(collect(YAML.load_all("")))
+    @test isequal(collect(YAML.load_all("null\n---\nnull\n")), [nothing, nothing])
+end
+
+@testset "quoted scalar termination" begin
+    for input in ("a: \"b\"\"", "a: \"\"\"", "\"b\"\"", "\"\"\"", "[\"b\"\"]")
+        @test_throws YAML.ScannerError YAML.load(input)
+    end
+    for (input, expected) in (
+        ("a: \"b\"", Dict("a" => "b")),
+        ("a: \"\"", Dict("a" => "")),
+        ("a: ''", Dict("a" => "")),
+        ("a: 'it''s'", Dict("a" => "it's")),
+        ("a: ''''", Dict("a" => "'")),
+        ("a: \"a\\\"b\"", Dict("a" => "a\"b")),
+        ("a: 'a\"\"b'", Dict("a" => "a\"\"b")),
+        ("[\"b\", \"\"]", ["b", ""]),
+    )
+        @test YAML.load(input) == expected
+    end
+end
+
+@testset "Unicode escapes and literal backslashes" begin
+    texts = [
+        "Attosecond-resolution Hong\u00adOu-mandel interferometry",
+        "format \u061cG",
+        "non-BMP \U0001d173G",
+        "language tag \U000e0001G",
+        "hex follows \u00ada\U0001d173f",
+        raw"literal \uad \U1d173 and \\uad",
+        raw"dollar $ and backslash \$",
+    ]
+    for text in texts
+        @test YAML.load(YAML.yaml(text)) == text
+        @test YAML.load(YAML.yaml([text])) == [text]
+        @test YAML.load(YAML.yaml(Dict("value" => text))) == Dict("value" => text)
+        key = "key " * text
+        @test YAML.load(YAML.yaml(Dict(key => 1))) == Dict(key => 1)
+        mktemp() do path, io
+            close(io)
+            YAML.write_file(path, Dict("value" => text))
+            @test YAML.load_file(path) == Dict("value" => text)
+        end
+    end
+end
+
+@testset "string keys retain their meaning" begin
+    for key in ("null", "Null", "NULL", "~", "key\npart", "key\rpart", "key\tpart",
+                "key\0part", "key\u0085part", "key\u2028part", "key\u00adO",
+                "normal", "yes", "0")
+        expected = Dict{Any,Any}(key => 1, nothing => 2)
+        @test YAML.load(YAML.yaml(expected)) == expected
+        nested = Dict("nested" => [expected])
+        @test YAML.load(YAML.yaml(nested)) == nested
+        mktemp() do path, io
+            close(io)
+            YAML.write_file(path, expected)
+            @test YAML.load_file(path) == expected
+        end
+    end
+end
+
+@testset "flow scalar line folding" begin
+    for linebreak in ("\n", "\r\n", "\r", "\u0085"), delimiter in ("'", "\"", "")
+        for (count, expected) in ((1, "first second"), (2, "first\nsecond"), (3, "first\n\nsecond"))
+            input = "value: " * delimiter * "first  " * repeat(linebreak, count) * "    second" * delimiter * "\n"
+            @test YAML.load(input) == Dict("value" => expected)
+        end
+    end
+    for linebreak in ("\u2028", "\u2029"), delimiter in ("'", "\"", "")
+        input = "value: " * delimiter * "first" * linebreak * "    second" * delimiter * "\n"
+        @test YAML.load(input) == Dict("value" => "first" * linebreak * "second")
+    end
+    for linebreak in ("\n", "\r\n", "\r", "\u0085")
+        @test YAML.load("value: \"first\\" * linebreak * "    second\"\n") == Dict("value" => "firstsecond")
+        @test YAML.load("value: 'it''s" * linebreak * "    fine'\n") == Dict("value" => "it's fine")
+    end
+    @test YAML.load("value: ' first  '\n") == Dict("value" => " first  ")
+    @test YAML.load("value: \" first  \"\n") == Dict("value" => " first  ")
+end
+
+@testset "control characters in quoted and multiline strings" begin
+    controls = ('\0', '\x01', '\a', '\b', '\v', '\f', '\r', '\e', '\x7f', '\u0080', '\u0085', '\u009f', '\u2028', '\u2029')
+    for control in controls, text in ("quote \" " * control * " after", "first\nsecond " * control * " after")
+        output = YAML.yaml(text)
+        @test !occursin(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f]", output)
+        @test YAML.load(output) == text
+        @test YAML.load(YAML.yaml([text])) == [text]
+        @test YAML.load(YAML.yaml(Dict("value" => text))) == Dict("value" => text)
+        mktemp() do path, io
+            close(io)
+            YAML.write_file(path, text)
+            @test YAML.load_file(path) == text
+        end
+    end
+    for text in ("first\nsecond", "quote \" with\ta tab")
+        @test startswith(YAML.yaml(text), "|-\n")
+        @test YAML.load(YAML.yaml(text)) == text
+    end
+end
+
+@testset "binary integer construction" begin
+    for (input, expected) in (("0b0", 0), ("0b1", 1), ("0b1010", 10),
+                              ("0b10_01", 9), ("+0b10_01", 9), ("-0b10_01", -9)),
+        tag in ("", "!!int ")
+        yaml_input = tag * input
+        @test YAML.load(yaml_input) === expected
+        @test YAML.load("value: " * yaml_input) == Dict("value" => expected)
+        mktemp() do path, io
+            write(io, yaml_input)
+            close(io)
+            @test YAML.load_file(path) === expected
+        end
+    end
+    @test_throws ArgumentError YAML.load("!!int 0b102")
+    @test_throws ArgumentError YAML.load("!!int 0b")
+    @test YAML.load("0b102") == "0b102"
+    @test YAML.load("0b") == "0b"
+    @test YAML.load("0b" * bitstring(typemax(Int))) === typemax(Int)
+    @test YAML.load("-0b1" * repeat("0", 8 * sizeof(Int) - 1)) === typemin(Int)
+    @test_throws OverflowError YAML.load("0b1" * repeat("0", 8 * sizeof(Int) - 1))
 end
 
 end  # module

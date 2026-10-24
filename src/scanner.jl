@@ -1292,7 +1292,8 @@ function scan_flow_scalar(stream::TokenStream, style::Char)
     q = peek(stream.input) # quote
     forwardchars!(stream)
 
-    while peek(stream.input) != q || peek(stream.input, 1) == q
+    # Only single-quoted scalars escape a quote by doubling it.
+    while peek(stream.input) != q || (!double && peek(stream.input, 1) == q)
         append!(chunks, scan_flow_scalar_spaces(stream, double, start_mark))
         append!(chunks, scan_flow_scalar_non_spaces(stream, double, start_mark))
     end
@@ -1406,9 +1407,9 @@ function scan_flow_scalar_spaces(stream::TokenStream, double::Bool,
     elseif is_b_char(YAMLV1_1(), c)
         line_break = scan_line_break(YAMLV1_1(), stream)
         breaks = scan_flow_scalar_breaks(stream, double, start_mark)
-        if line_break != '\n'
+        if line_break != "\n"
             push!(chunks, line_break)
-        else isempty(breaks)
+        elseif isempty(breaks)
             push!(chunks, ' ')
         end
         append!(chunks, breaks)
@@ -1549,11 +1550,12 @@ function scan_plain_spaces(stream::TokenStream, indent::Integer,
             end
         end
 
-        if line_break != '\n'
+        if line_break != "\n"
             push!(chunks, line_break)
         elseif isempty(breaks)
             push!(chunks, ' ')
         end
+        append!(chunks, breaks)
     elseif !isempty(whitespaces)
         push!(chunks, whitespaces)
     end
