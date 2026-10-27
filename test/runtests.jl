@@ -560,6 +560,10 @@ end
     @test YAML.load("01e2") === 100.0
     @test YAML.load("-01e2") === -100.0
     @test YAML.load("1e5") === 100000.0
+    # 0o scalars must still resolve as int so custom int constructors receive them
+    ints = Dict{String,Function}("tag:yaml.org,2002:int" => (c, n) -> parse(BigInt, YAML.construct_scalar(c, n)))
+    @test YAML.load("0o14", ints) == 12
+    @test YAML.load("0o777777777777777777777777", ints) == parse(BigInt, "0o777777777777777777777777")
 end
 
 @testset "empty input and null documents" begin

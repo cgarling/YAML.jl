@@ -20,6 +20,7 @@ const default_implicit_resolvers =
          ("tag:yaml.org,2002:int",
           r"^(?:[-+]?0b[0-1_]+
             |[-+] [0-9]+
+            |0o [0-7]+
             |0 [0-7]*
             |[1-9] [0-9]*
             |0x [0-9a-fA-F]+)$"x),
